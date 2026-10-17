@@ -1,0 +1,32 @@
+﻿# Python virtual environments
+.venv/
+.venv312/
+.ve/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
+# Editor and operating-system files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local webcam data and logs
+live_landmarks.csv
+results/live_analysis.csv
+
+# Generated datasets and experiment outputs
+results/cleaned_data.csv
+results/ml_data.csv
+results/load_results.csv
+results/load_predictions.csv
+results/posture_test_predictions.csv
+results/predictions.csv
