@@ -12,11 +12,12 @@ from datetime import datetime
 # 1. PATHS
 # ============================================================
 
-MODEL_PATH = "pose_landmarker_full.task"
-POSTURE_MODEL_PATH = "models/posture_model.pkl"
-LOG_FILE = "results/live_analysis.csv"
+BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+MODEL_PATH = os.path.join(BASE_DIR, "pose_landmarker_full.task")
+POSTURE_MODEL_PATH = os.path.join(BASE_DIR, "models", "posture_model.pkl")
+LOG_FILE = os.path.join(BASE_DIR, "results", "live_analysis.csv")
 
-os.makedirs("results", exist_ok=True)
+os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
 
 
 # ============================================================
@@ -385,9 +386,14 @@ print(
 print("=" * 70)
 
 
+from collections import deque
+
 start_time = time.time()
 
 last_save_time = 0
+
+# Temporal smoothing window to stabilize classifications and eliminate frame flicker
+prob_history = deque(maxlen=7)
 
 
 # ============================================================
@@ -417,15 +423,10 @@ with PoseLandmarker.create_from_options(
 
 
         # ====================================================
-        # RESIZE
+        # MIRROR PREVIEW (Selfie View)
         # ====================================================
 
-        frame = cv2.resize(
-
-            frame,
-
-            (640, 480)
-        )
+        frame = cv2.flip(frame, 1)
 
 
         # ====================================================
@@ -674,7 +675,14 @@ with PoseLandmarker.create_from_options(
                     continue
 
 
-                point = landmarks[
+                # Use pose_world_landmarks (meters centered at hips) to match training data
+                world_lms = (
+                    result.pose_world_landmarks[0]
+                    if result.pose_world_landmarks
+                    else landmarks
+                )
+
+                point = world_lms[
                     landmark_index
                 ]
 
@@ -686,8 +694,7 @@ with PoseLandmarker.create_from_options(
                 if coordinate == "x":
 
                     feature_values.append(
-
-                        point.x
+                        -point.x  # Mirror adjustment so left/right match real lean
                     )
 
 
@@ -781,7 +788,7 @@ with PoseLandmarker.create_from_options(
 
             try:
 
-                probabilities = (
+                raw_probabilities = (
 
                     posture_model.predict_proba(
 
@@ -790,6 +797,10 @@ with PoseLandmarker.create_from_options(
                     )[0]
                 )
 
+                # Temporal smoothing over rolling window of 7 frames to stabilize posture and eliminate flicker
+                prob_history.append(raw_probabilities)
+                probabilities = np.mean(prob_history, axis=0)
+                prediction = posture_model.classes_[np.argmax(probabilities)]
 
                 confidence = (
 
@@ -927,10 +938,16 @@ with PoseLandmarker.create_from_options(
             # 23. DISPLAY LANDMARKS
             # =================================================
 
+            # Anatomical ear calibration:
+            # Shift laterally outward from nose/cheek to the true ear tragus/pinna
+            nose_pt = landmarks[0]
+            ear_offset_l_x = int((left_ear.x - nose_pt.x) * w * 0.25)
+            ear_offset_r_x = int((right_ear.x - nose_pt.x) * w * 0.25)
+
             left_ear_xy = (
 
                 int(
-                    left_ear.x * w
+                    left_ear.x * w + ear_offset_l_x
                 ),
 
                 int(
@@ -942,7 +959,7 @@ with PoseLandmarker.create_from_options(
             right_ear_xy = (
 
                 int(
-                    right_ear.x * w
+                    right_ear.x * w + ear_offset_r_x
                 ),
 
                 int(
@@ -951,6 +968,11 @@ with PoseLandmarker.create_from_options(
             )
 
 
+            # Anatomical shoulder calibration:
+            # Elevate from glenohumeral joint center to acromion ridge (~15% of vertical span)
+            sh_offset_l = max(0.0, (left_shoulder.y - left_ear.y) * h * 0.15)
+            sh_offset_r = max(0.0, (right_shoulder.y - right_ear.y) * h * 0.15)
+
             left_shoulder_xy = (
 
                 int(
@@ -958,7 +980,7 @@ with PoseLandmarker.create_from_options(
                 ),
 
                 int(
-                    left_shoulder.y * h
+                    left_shoulder.y * h - sh_offset_l
                 )
             )
 
@@ -970,7 +992,7 @@ with PoseLandmarker.create_from_options(
                 ),
 
                 int(
-                    right_shoulder.y * h
+                    right_shoulder.y * h - sh_offset_r
                 )
             )
 
