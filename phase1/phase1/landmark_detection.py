@@ -534,7 +534,7 @@ with PoseLandmarker.create_from_options(
         # PERSON DETECTED
         # ====================================================
 
-        if result.pose_landmarks:
+        if result.pose_landmarks and result.pose_world_landmarks:
 
             landmarks = (
 
@@ -718,11 +718,7 @@ with PoseLandmarker.create_from_options(
 
 
                 # Use pose_world_landmarks (meters centered at hips) to match training data
-                world_lms = (
-                    result.pose_world_landmarks[0]
-                    if result.pose_world_landmarks
-                    else landmarks
-                )
+                world_lms = result.pose_world_landmarks[0]
 
                 point = world_lms[
                     landmark_index
@@ -1292,12 +1288,13 @@ with PoseLandmarker.create_from_options(
         # ====================================================
 
         else:
-
+            session_latest_row = None
+            prob_history.clear()
             cv2.putText(
 
                 frame,
 
-                "NO PERSON DETECTED",
+                ("3D LANDMARKS UNAVAILABLE" if result.pose_landmarks else "NO PERSON DETECTED"),
 
                 (15, 40),
 
