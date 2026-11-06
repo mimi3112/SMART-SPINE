@@ -4,6 +4,10 @@
 
 > ⚠ **Non-clinical prototype.** Results are for research and demonstration only. This is not medical advice.
 
+Developed By: Harshita Chaudhari(Vth Sem, RBU Nagpur)
+              Meenakshi Motwani(Vth Sem, RBU Nagpur)
+              Tanishka Mohod(Vth Sem, RBU Nagpur)
+
 ---
 
 ## How to Launch
