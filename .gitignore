@@ -20,8 +20,10 @@ __pycache__/
 Thumbs.db
 
 # Local webcam data and logs
+create_shortcut.ps1
 live_landmarks.csv
 results/live_analysis.csv
+results/tracker.log
 
 # Generated datasets and experiment outputs
 results/cleaned_data.csv
