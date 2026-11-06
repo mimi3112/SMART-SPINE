@@ -1,3 +1,4 @@
+import argparse
 import cv2
 import mediapipe as mp
 import time
@@ -12,7 +13,18 @@ from datetime import datetime
 # 1. PATHS
 # ============================================================
 
-BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+def _find_project_root() -> str:
+    from pathlib import Path
+    candidate = Path(__file__).resolve().parent
+    while True:
+        if (candidate / "models" / "posture_model.pkl").exists() and (candidate / "results").exists():
+            return str(candidate)
+        parent = candidate.parent
+        if parent == candidate:
+            return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        candidate = parent
+
+BASE_DIR = _find_project_root()
 MODEL_PATH = os.path.join(BASE_DIR, "pose_landmarker_full.task")
 POSTURE_MODEL_PATH = os.path.join(BASE_DIR, "models", "posture_model.pkl")
 LOG_FILE = os.path.join(BASE_DIR, "results", "live_analysis.csv")
@@ -24,19 +36,24 @@ os.makedirs(os.path.join(BASE_DIR, "results"), exist_ok=True)
 # 2. BODY WEIGHT
 # ============================================================
 
-try:
+_parser = argparse.ArgumentParser(description="SMART-SPINE real-time analysis")
+_parser.add_argument("--weight", type=float, default=None, help="Body weight in kg")
+_parser.add_argument("--once", action="store_true", help="Take one sample and exit")
+_parser.add_argument("--interval", type=int, default=None, help="Seconds between samples")
+_args = _parser.parse_args()
 
-    body_weight = float(
-        input("Enter body weight (kg): ")
-    )
-
-except ValueError:
-
-    body_weight = 60.0
-
-    print(
-        "Invalid input. Using 60 kg."
-    )
+if _args.weight is not None:
+    if 20.0 <= _args.weight <= 250.0:
+        body_weight = _args.weight
+    else:
+        body_weight = 60.0
+        print("Invalid input. Using 60 kg.")
+else:
+    try:
+        body_weight = float(input("Enter body weight (kg): "))
+    except ValueError:
+        body_weight = 60.0
+        print("Invalid input. Using 60 kg.")
 
 
 # ============================================================
@@ -346,15 +363,16 @@ options = PoseLandmarkerOptions(
 # 9. CAMERA
 # ============================================================
 
-cap = cv2.VideoCapture(0)
-
+import sys
+if sys.platform == "win32":
+    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        cap = cv2.VideoCapture(0)
+else:
+    cap = cv2.VideoCapture(0)
 
 if not cap.isOpened():
-
-    print(
-        "ERROR: Camera could not be opened."
-    )
-
+    print("ERROR: Camera could not be opened.")
     exit()
 
 
@@ -394,8 +412,8 @@ next_capture_time = start_time  # Take the first sample immediately
 session_latest_row = None
 camera_active = True
 
-CAPTURE_SECONDS = 3
-INTERVAL_SECONDS = 30
+CAPTURE_SECONDS = 6
+INTERVAL_SECONDS = _args.interval if _args.interval is not None else 3
 
 # Temporal smoothing window to stabilize classifications and eliminate frame flicker
 prob_history = deque(maxlen=7)
@@ -415,7 +433,7 @@ with PoseLandmarker.create_from_options(
 
         # Between samples, keep the camera released and wait.
         now = time.time()
-        if now < next_capture_time:
+        if INTERVAL_SECONDS > 0 and now < next_capture_time:
             if camera_active:
                 cap.release()
                 camera_active = False
@@ -439,11 +457,16 @@ with PoseLandmarker.create_from_options(
             continue
 
         if not camera_active:
-            cap = cv2.VideoCapture(0)
+            if sys.platform == "win32":
+                cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(0)
+            else:
+                cap = cv2.VideoCapture(0)
             if not cap.isOpened():
-                print("ERROR: Camera could not be reopened; retrying in 30 seconds.")
+                print(f"ERROR: Camera could not be reopened; retrying in {INTERVAL_SECONDS} seconds.")
                 cap.release()
-                next_capture_time = time.time() + INTERVAL_SECONDS
+                next_capture_time = time.time() + (INTERVAL_SECONDS if INTERVAL_SECONDS > 0 else 3)
                 continue
             camera_active = True
             capture_start_time = time.time()
@@ -456,16 +479,20 @@ with PoseLandmarker.create_from_options(
         # ====================================================
 
         ret, frame = cap.read()
-
+        if not ret:
+            for _ in range(5):
+                time.sleep(0.05)
+                ret, frame = cap.read()
+                if ret:
+                    break
 
         if not ret:
-            # Treat a temporary webcam read failure as a missed sample,
-            # not as a reason to terminate the whole scheduler.
-            print("WARNING: Could not read a frame. Skipping this sample and retrying in 30 seconds.")
-            cap.release()
-            camera_active = False
-            next_capture_time = time.time() + INTERVAL_SECONDS
-            session_latest_row = None
+            print("WARNING: Could not read a frame. Retrying...")
+            if INTERVAL_SECONDS > 0:
+                cap.release()
+                camera_active = False
+                next_capture_time = time.time() + INTERVAL_SECONDS
+                session_latest_row = None
             continue
 
 
@@ -1340,20 +1367,33 @@ with PoseLandmarker.create_from_options(
 
             break
 
-        # End the brief capture after 3 seconds, save one row, and release camera.
-        if time.time() - capture_start_time >= CAPTURE_SECONDS:
-            if session_latest_row is not None:
-                pd.DataFrame([session_latest_row]).to_csv(
-                    LOG_FILE, mode="a", header=False, index=False
-                )
-                print("Saved one 3-second sample to:", LOG_FILE)
-            else:
-                print("No pose detected during this sample; nothing logged.")
+        # Continuous mode vs Scheduled mode logging
+        if INTERVAL_SECONDS == 0:
+            if time.time() - capture_start_time >= 2.0:
+                if session_latest_row is not None:
+                    pd.DataFrame([session_latest_row]).to_csv(
+                        LOG_FILE, mode="a", header=False, index=False
+                    )
+                    print("Logged live observation to:", LOG_FILE, flush=True)
+                capture_start_time = time.time()
+                if _args.once:
+                    break
+        else:
+            if time.time() - capture_start_time >= CAPTURE_SECONDS:
+                if session_latest_row is not None:
+                    pd.DataFrame([session_latest_row]).to_csv(
+                        LOG_FILE, mode="a", header=False, index=False
+                    )
+                    print("Saved one sample to:", LOG_FILE, flush=True)
+                else:
+                    print("No pose detected during this sample; nothing logged.", flush=True)
 
-            cap.release()
-            camera_active = False
-            next_capture_time = time.time() + INTERVAL_SECONDS
-            print("Camera released. Next sample in 30 seconds.")
+                cap.release()
+                camera_active = False
+                if _args.once:
+                    break
+                next_capture_time = time.time() + INTERVAL_SECONDS
+                print("Camera released. Next sample in", INTERVAL_SECONDS, "seconds.", flush=True)
 
 
 # ============================================================
